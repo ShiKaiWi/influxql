@@ -314,7 +314,7 @@ pub fn batch_filter(
 ) -> Result<RecordBatch, DataFusionError> {
     predicate
         .evaluate(batch)
-        .map(|v| v.into_array(batch.num_rows()))
+        .and_then(|v| v.into_array(batch.num_rows()))
         .and_then(|array| {
             array
                 .as_any()
@@ -326,7 +326,8 @@ pub fn batch_filter(
                 })
                 // apply filter array to record batch
                 .and_then(|filter_array| {
-                    filter_record_batch(batch, filter_array).map_err(DataFusionError::ArrowError)
+                    filter_record_batch(batch, filter_array)
+                        .map_err(|err| DataFusionError::ArrowError(err, None))
                 })
         })
 }
@@ -370,7 +371,7 @@ pub fn create_physical_expr_from_schema(
     schema: &SchemaRef,
 ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
     let df_schema = Arc::clone(schema).to_dfschema_ref()?;
-    create_physical_expr(expr, df_schema.as_ref(), schema.as_ref(), props)
+    create_physical_expr(expr, df_schema.as_ref(), props)
 }
 
 /// Returns a [`PruningPredicate`] from the logical [`Expr`] and Arrow [`SchemaRef`]

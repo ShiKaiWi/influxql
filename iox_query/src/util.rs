@@ -33,5 +33,5 @@ pub fn df_physical_expr(
     let expr = simplifier.coerce(expr, Arc::clone(&df_schema))?;
     trace!(%expr, "coerced logical expression");
 
-    create_physical_expr(&expr, df_schema.as_ref(), schema.as_ref(), &props)
+    create_physical_expr(&expr, df_schema.as_ref(), &props)
 }

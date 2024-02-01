@@ -274,10 +274,10 @@ impl ExecutionPlan for StreamSplitExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Statistics {
+    fn statistics(&self) -> Result<Statistics> {
         // For now, don't return any statistics (in the future we
         // could potentially estimate the output cardinalities)
-        Statistics::default()
+        Ok(Statistics::new_unknown(&*self.input.schema()))
     }
 }
 

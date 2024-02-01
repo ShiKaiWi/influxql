@@ -23,11 +23,12 @@ use datafusion::logical_expr::logical_plan::Analyze;
 use datafusion::logical_expr::utils::{expr_as_column_expr, find_aggregate_exprs};
 use datafusion::logical_expr::{
     binary_expr, col, date_bin, expr, expr::WindowFunction, lit, lit_timestamp_nano, now,
-    window_function, Aggregate, AggregateFunction, AggregateUDF, Between, BinaryExpr,
-    BuiltInWindowFunction, BuiltinScalarFunction, EmptyRelation, Explain, Expr, ExprSchemable,
-    Extension, LogicalPlan, LogicalPlanBuilder, Operator, PlanType, ScalarUDF, TableSource,
-    ToStringifiedPlan, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    Aggregate, AggregateFunction, AggregateUDF, Between, BinaryExpr, BuiltInWindowFunction,
+    BuiltinScalarFunction, EmptyRelation, Explain, Expr, ExprSchemable, Extension, LogicalPlan,
+    LogicalPlanBuilder, Operator, PlanType, ScalarUDF, TableSource, ToStringifiedPlan, WindowFrame,
+    WindowFrameBound, WindowFrameUnits,
 };
+use datafusion::logical_expr::{Distinct, ScalarFunctionDefinition, WindowFunctionDefinition};
 use datafusion_util::{lit_dict, AsExpr};
 use generated_types::influxdata::iox::querier::v1::InfluxQlMetadata;
 use influxdb_influxql_parser::explain::{ExplainOption, ExplainStatement};
@@ -473,18 +474,18 @@ impl<'a> InfluxQLToLogicalPlan<'a> {
                 //   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                 // ) AS iox::row
                 let window_func_exprs = vec![Expr::WindowFunction(WindowFunction {
-                    fun: window_function::WindowFunction::BuiltInWindowFunction(
+                    fun: WindowFunctionDefinition::BuiltInWindowFunction(
                         BuiltInWindowFunction::RowNumber,
                     ),
                     args: vec![],
                     partition_by: fields_to_exprs_no_nulls(plan.schema(), group_by_tag_set)
                         .collect::<Vec<_>>(),
                     order_by: vec![select.order_by.to_sort_expr()],
-                    window_frame: WindowFrame {
-                        units: WindowFrameUnits::Rows,
-                        start_bound: WindowFrameBound::Preceding(ScalarValue::Null),
-                        end_bound: WindowFrameBound::CurrentRow,
-                    },
+                    window_frame: WindowFrame::new_bounds(
+                        WindowFrameUnits::Rows,
+                        WindowFrameBound::Preceding(ScalarValue::Null),
+                        WindowFrameBound::CurrentRow,
+                    ),
                 })
                 .alias(IOX_ROW_ALIAS)];
 
@@ -561,7 +562,9 @@ impl<'a> InfluxQLToLogicalPlan<'a> {
         }
 
         let Some(time_column_index) = find_time_column_index(fields) else {
-            return Err(DataFusionError::Internal("unable to find time column".to_owned()))
+            return Err(DataFusionError::Internal(
+                "unable to find time column".to_owned(),
+            ));
         };
 
         // Find a list of unique aggregate expressions from the projection.
@@ -635,7 +638,7 @@ impl<'a> InfluxQLToLogicalPlan<'a> {
         {
             let args = match select_exprs[time_column_index].clone().unalias() {
                 Expr::ScalarFunction(ScalarFunction {
-                    fun: BuiltinScalarFunction::DateBin,
+                    func_def: ScalarFunctionDefinition::BuiltIn(BuiltinScalarFunction::DateBin),
                     args,
                 }) => args,
                 _ => {
@@ -1082,12 +1085,15 @@ impl<'a> InfluxQLToLogicalPlan<'a> {
                     ))
                 } else {
                     Ok(Expr::ScalarFunction(ScalarFunction {
-                        fun: BuiltinScalarFunction::Log,
+                        func_def: ScalarFunctionDefinition::BuiltIn(BuiltinScalarFunction::Log),
                         args: args.into_iter().rev().collect(),
                     }))
                 }
             }
-            fun => Ok(Expr::ScalarFunction(ScalarFunction { fun, args })),
+            fun => Ok(Expr::ScalarFunction(ScalarFunction {
+                func_def: ScalarFunctionDefinition::BuiltIn(fun),
+                args,
+            })),
         }
     }
 
@@ -1153,7 +1159,10 @@ impl<'a> InfluxQLToLogicalPlan<'a> {
                 MeasurementSelection::Subquery(_) => Err(DataFusionError::NotImplemented(
                     "subquery in FROM clause".into(),
                 )),
-            }? else { continue };
+            }?
+            else {
+                continue;
+            };
             table_projs.push_back(table_proj);
         }
         Ok(table_projs)
@@ -1230,14 +1239,20 @@ fn build_gap_fill_node(
         )));
     };
 
-    let aggr = Aggregate::try_from_plan(&input)?;
-    let mut new_group_expr: Vec<_> = aggr
-        .schema
-        .fields()
-        .iter()
-        .map(|f| Expr::Column(f.qualified_column()))
-        .collect();
-    let aggr_expr = new_group_expr.split_off(aggr.group_expr.len());
+    let (new_group_expr, aggr_expr) = if let LogicalPlan::Aggregate(aggr) = &input {
+        let mut new_group_expr: Vec<_> = aggr
+            .schema
+            .fields()
+            .iter()
+            .map(|f| Expr::Column(f.qualified_column()))
+            .collect();
+        let aggr_expr = new_group_expr.split_off(aggr.group_expr.len());
+        (new_group_expr, aggr_expr)
+    } else {
+        return Err(DataFusionError::Internal(format!(
+            "Expect aggregate plan here, found:{input:?}"
+        )));
+    };
 
     // The fill strategy for InfluxQL is specified at the query level
     let fill_strategy = aggr_expr
@@ -1358,11 +1373,17 @@ fn plan_with_metadata(plan: LogicalPlan, metadata: &InfluxQlMetadata) -> Result<
                 v.schema = make_schema(Arc::clone(&src.schema), metadata)?;
                 LogicalPlan::Analyze(v)
             }
-            LogicalPlan::Distinct(src) => {
-                let mut v = src.clone();
-                v.input = Arc::new(set_schema(&src.input, metadata)?);
-                LogicalPlan::Distinct(v)
-            }
+            LogicalPlan::Distinct(distinct) => match distinct {
+                Distinct::All(src) => {
+                    let v = Arc::new(set_schema(&src, metadata)?);
+                    LogicalPlan::Distinct(Distinct::All((v)))
+                }
+                Distinct::On(src) => {
+                    let mut v = src.clone();
+                    v.schema = make_schema(Arc::clone(&src.schema), metadata)?;
+                    LogicalPlan::Distinct(Distinct::On(v))
+                }
+            },
             LogicalPlan::Unnest(src) => {
                 let mut v = src.clone();
                 v.schema = make_schema(Arc::clone(&src.schema), metadata)?;

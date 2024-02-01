@@ -276,9 +276,9 @@ impl ExecutionPlan for NonNullCheckerExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Statistics {
+    fn statistics(&self) -> Result<Statistics> {
         // don't know anything about the statistics
-        Statistics::default()
+        Ok(Statistics::new_unknown(&self.input.schema()))
     }
 }
 

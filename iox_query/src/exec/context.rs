@@ -82,14 +82,7 @@ impl ExtensionPlanner for IOxExtensionPlanner {
             let split_exprs = stream_split
                 .split_exprs()
                 .iter()
-                .map(|e| {
-                    planner.create_physical_expr(
-                        e,
-                        logical_inputs[0].schema(),
-                        &physical_inputs[0].schema(),
-                        session_state,
-                    )
-                })
+                .map(|e| planner.create_physical_expr(e, logical_inputs[0].schema(), session_state))
                 .collect::<Result<Vec<_>>>()?;
 
             Some(Arc::new(StreamSplitExec::new(

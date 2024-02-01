@@ -15,7 +15,7 @@ use std::{
 
 use arrow::{compute::SortOptions, datatypes::SchemaRef};
 use datafusion::{
-    common::DFSchemaRef,
+    common::{stats::Precision, DFSchemaRef},
     error::{DataFusionError, Result},
     execution::{context::TaskContext, memory_pool::MemoryConsumer},
     logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
@@ -272,40 +272,30 @@ pub(crate) fn plan_gap_fill(
     let group_expr: Result<Vec<_>> = gap_fill
         .group_expr
         .iter()
-        .map(|e| create_physical_expr(e, input_dfschema, input_schema, execution_props))
+        .map(|e| create_physical_expr(e, input_dfschema, execution_props))
         .collect();
     let group_expr = group_expr?;
 
     let aggr_expr: Result<Vec<_>> = gap_fill
         .aggr_expr
         .iter()
-        .map(|e| create_physical_expr(e, input_dfschema, input_schema, execution_props))
+        .map(|e| create_physical_expr(e, input_dfschema, execution_props))
         .collect();
     let aggr_expr = aggr_expr?;
 
     let logical_time_column = gap_fill.params.time_column.try_into_col()?;
     let time_column = Column::new_with_schema(&logical_time_column.name, input_schema)?;
 
-    let stride = create_physical_expr(
-        &gap_fill.params.stride,
-        input_dfschema,
-        input_schema,
-        execution_props,
-    )?;
+    let stride = create_physical_expr(&gap_fill.params.stride, input_dfschema, execution_props)?;
 
     let time_range = &gap_fill.params.time_range;
     let time_range = try_map_range(time_range, |b| {
         try_map_bound(b.as_ref(), |e| {
-            create_physical_expr(e, input_dfschema, input_schema, execution_props)
+            create_physical_expr(e, input_dfschema, execution_props)
         })
     })?;
 
-    let origin = create_physical_expr(
-        &gap_fill.params.origin,
-        input_dfschema,
-        input_schema,
-        execution_props,
-    )?;
+    let origin = create_physical_expr(&gap_fill.params.origin, input_dfschema, execution_props)?;
 
     let fill_strategy = gap_fill
         .params
@@ -313,7 +303,7 @@ pub(crate) fn plan_gap_fill(
         .iter()
         .map(|(e, fs)| {
             Ok((
-                create_physical_expr(e, input_dfschema, input_schema, execution_props)?,
+                create_physical_expr(e, input_dfschema, execution_props)?,
                 fs.clone(),
             ))
         })
@@ -528,8 +518,8 @@ impl ExecutionPlan for GapFillExec {
         )?))
     }
 
-    fn statistics(&self) -> Statistics {
-        Statistics::default()
+    fn statistics(&self) -> Result<Statistics> {
+        Ok(Statistics::new_unknown(&*self.input.schema()))
     }
 }
 
